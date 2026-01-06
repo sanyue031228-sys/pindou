@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mard 拼豆专业版 (透明背景适配)</title>
+    <style>
+        :root { --primary: #4a90e2; --accent: #ff4757; }
+        body { font-family: -apple-system, system-ui, sans-serif; background: #f0f2f5; margin: 0; padding: 10px; display: flex; flex-direction: column; align-items: center; }
+        .card { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 100%; max-width: 900px; box-sizing: border-box; }
+        
+        .slider-group { background: #f8f9fa; padding: 12px; border-radius: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .input-row { display: flex; align-items: center; gap: 8px; width: 100%; }
+        input[type="range"] { flex: 1; height: 30px; }
+        input[type="number"] { width: 70px; padding: 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 16px; text-align: center; }
+
+        .tool-bar { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #eee; }
+        button { padding: 12px 5px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 14px; }
+        .btn-gen { background: var(--primary); color: white; grid-column: span 2; }
+        .btn-export { background: #28a745; color: white; grid-column: span 2; }
+        .btn-tool { background: #eee; color: #333; }
+        .btn-tool.active { background: var(--accent); color: white; }
+
+        #previewContainer { 
+            position: relative; margin-top: 15px; border: 1px solid #ddd; 
+            width: 100%; height: 60vh; overflow: auto; 
+            /* 棋盘格模拟透明 */
+            background-color: #fff;
+            background-image: linear-gradient(45deg, #eee 25%, transparent 25%, transparent 75%, #eee 75%, #eee), 
+                              linear-gradient(45deg, #eee 25%, transparent 25%, transparent 75%, #eee 75%, #eee);
+            background-size: 20px 20px;
+            background-position: 0 0, 10px 10px;
+        }
+        canvas { display: block; touch-action: none; cursor: crosshair; }
+
+        .palette-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); display: none; z-index: 1000; justify-content: center; align-items: flex-end; }
+        .palette-content { background: white; width: 100%; max-height: 80%; border-radius: 20px 20px 0 0; padding: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(50px, 1fr)); gap: 10px; overflow-y: auto; box-sizing: border-box; }
+        .color-swatch { aspect-ratio: 1; border: 1px solid #ddd; border-radius: 5px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; }
+
+        .status-bar { font-size: 14px; margin-top: 10px; width: 100%; display: flex; justify-content: space-between; align-items: center; }
+        #curSwatch { width: 18px; height: 18px; border: 1px solid #000; display: inline-block; vertical-align: middle; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <div class="controls">
+        <input type="file" id="upload" accept="image/*" style="width: 100%; margin-bottom: 10px;">
+        <div class="slider-group">
+            <div class="input-row">
+                <span>横向格数:</span>
+                <input type="range" id="gridSlider" min="10" max="600" value="40">
+                <input type="number" id="gridInput" min="10" max="600" value="40">
+            </div>
+        </div>
+    </div>
+    
+    <div class="tool-bar">
+        <button class="btn-gen" onclick="processImage()">1. 生成图纸 (识别透明层)</button>
+        <button id="drawBtn" class="btn-tool active" onclick="setMode('draw')">✏️ 画笔涂改</button>
+        <button id="smoothBtn" class="btn-tool" onclick="setMode('smooth')">🪄 框选平滑</button>
+        <button class="btn-export" onclick="exportImage()">💾 导出高清大图 (iOS长按保存)</button>
+    </div>
+
+    <div class="status-bar">
+        <span id="modeText">模式: 画笔</span>
+        <span onclick="showPalette()" style="cursor:pointer; background:#eee; padding:6px 12px; border-radius:6px;">
+            当前色: <span id="curSwatch"></span> <b id="curCode">H1</b> ▽
+        </span>
+    </div>
+</div>
+
+<div id="previewContainer">
+    <canvas id="mainCanvas"></canvas>
+</div>
+
+<div id="paletteOverlay" class="palette-overlay" onclick="hidePalette()">
+    <div class="palette-content" onclick="event.stopPropagation()"></div>
+</div>
+
+<script>
+// --- 色库数据 (Mard) ---
+const MARD_PALETTE = {'A':[[255,247,214],[255,242,181],[255,235,153],[255,218,140],[255,211,130],[255,185,95],[255,160,65],[255,133,44],[255,105,35],[255,85,25],[255,65,15],[255,45,5],[255,35,0],[255,15,0],[255,0,0],[255,215,0],[255,185,50],[255,160,90],[255,130,120],[255,100,150],[255,80,180],[255,60,210],[248,228,197],[254,242,152],[253,248,190],[191,153,65]],'B':[[193,235,175],[147,222,118],[100,205,75],[60,185,45],[30,165,25],[15,145,15],[5,120,10],[0,100,5],[0,80,0],[0,60,0],[53,74,45],[32,58,36],[125,195,85],[165,225,100],[215,245,165],[135,185,155],[105,165,135],[75,145,115],[45,125,95],[190,215,195],[115,165,160],[15,55,50],[25,45,25],[205,230,145],[55,130,110],[95,100,45],[190,230,170],[155,210,165],[35,75,125],[215,240,175],[150,210,120],[110,170,95]],'C':[[205,235,255],[165,215,250],[120,195,245],[75,175,235],[35,155,225],[15,130,210],[5,105,190],[0,85,170],[0,65,150],[0,45,130],[55,195,205],[35,165,185],[15,135,165],[5,105,145],[0,85,125],[0,105,175],[0,170,225],[0,145,205],[0,120,185],[45,85,115],[185,215,225],[155,185,215],[195,215,240],[115,165,225],[85,135,215],[45,160,195],[195,210,235],[175,195,225],[45,75,125]],'D':[[215,210,245],[185,175,235],[155,140,225],[125,105,215],[95,70,205],[135,95,185],[115,75,165],[95,55,145],[75,35,125],[35,15,65],[195,155,215],[165,115,195],[155,0,125],[85,25,125],[25,25,135],[215,225,250],[185,205,245],[145,155,225],[185,45,185],[155,15,155],[125,5,125],[65,15,125],[125,115,135],[75,95,195],[55,75,185],[205,195,235]],'E':[[255,225,225],[255,195,205],[255,165,185],[255,135,165],[255,105,145],[255,75,125],[255,45,105],[255,15,85],[215,0,65],[185,0,45],[245,215,215],[225,185,185],[205,155,155],[255,245,215],[255,235,195],[245,185,165],[225,155,135],[205,125,105],[255,185,185],[255,145,145],[255,105,105],[255,65,65],[155,115,115],[235,175,215]],'F':[[255,205,195],[255,175,165],[255,145,135],[255,115,105],[255,85,75],[255,55,45],[255,25,15],[215,15,5],[185,5,0],[155,0,0],[115,35,15],[85,15,5],[255,125,85],[255,95,55],[255,55,25],[255,165,145],[255,135,115],[255,105,85],[255,75,55],[245,195,195],[215,155,155],[185,115,115],[245,135,115],[245,105,95],[235,75,75]],'G':[[255,225,185],[255,205,155],[255,185,125],[255,165,95],[255,145,65],[225,155,25],[185,125,15],[145,95,5],[115,75,0],[95,55,0],[165,145,125],[135,115,95],[105,85,65],[75,55,35],[255,250,225],[235,225,195],[115,85,75],[75,45,35],[155,105,85],[165,75,45],[235,155,105]],'H':[[255,255,255],[245,245,245],[235,235,235],[205,205,205],[175,175,175],[145,145,145],[115,115,115],[85,85,85],[255,250,240],[245,240,230],[235,230,220],[205,200,190],[175,170,160],[145,140,130],[240,245,235],[35,35,35],[15,15,15],[220,220,220],[180,180,180],[140,150,155],[245,250,230],[215,220,210],[125,125,115]],};
+const COLORS = [];
+Object.keys(MARD_PALETTE).forEach(p => MARD_PALETTE[p].forEach((rgb, i) => COLORS.push({ code: `${p}${i+1}`, rgb })));
+
+let originalImg = null, currentGrid = [];
+let config = { cols: 40, rows: 0, cellSize: 25, padding: 50, mode: 'draw' };
+let selectedColor = COLORS.find(c => c.code === 'H1');
+let isActing = false, startPos = { gx: 0, gy: 0 }, touchTimer = null;
+
+const canvas = document.getElementById('mainCanvas'), ctx = canvas.getContext('2d');
+const slider = document.getElementById('gridSlider'), input = document.getElementById('gridInput');
+
+// 输入同步
+slider.oninput = () => input.value = slider.value;
+input.oninput = () => slider.value = input.value;
+
+// 调色盘生成
+const paletteContent = document.querySelector('.palette-content');
+COLORS.forEach(c => {
+    const div = document.createElement('div');
+    div.className = 'color-swatch';
+    div.style.background = `rgb(${c.rgb.join(',')})`;
+    div.innerHTML = `<span style="background:rgba(255,255,255,0.7);padding:2px">${c.code}</span>`;
+    div.onclick = () => { selectColor(c); hidePalette(); };
+    paletteContent.appendChild(div);
+});
+
+function selectColor(c) {
+    selectedColor = c;
+    document.getElementById('curSwatch').style.background = c ? `rgb(${c.rgb.join(',')})` : 'transparent';
+    document.getElementById('curCode').innerText = c ? c.code : "擦除";
+}
+function showPalette() { document.getElementById('paletteOverlay').style.display = 'flex'; }
+function hidePalette() { document.getElementById('paletteOverlay').style.display = 'none'; }
+
+document.getElementById('upload').onchange = (e) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        originalImg = new Image();
+        originalImg.onload = processImage;
+        originalImg.src = ev.target.result;
+    };
+    reader.readAsDataURL(e.target.files[0]);
+};
+
+function processImage() {
+    if (!originalImg) return;
+    config.cols = parseInt(input.value);
+    config.rows = Math.round((originalImg.height / originalImg.width) * config.cols);
+    config.cellSize = config.cols > 300 ? 10 : (config.cols > 100 ? 16 : 26);
+
+    const tCan = document.createElement('canvas');
+    tCan.width = config.cols; tCan.height = config.rows;
+    const tCtx = tCan.getContext('2d');
+    tCtx.drawImage(originalImg, 0, 0, config.cols, config.rows);
+    const data = tCtx.getImageData(0, 0, config.cols, config.rows).data;
+
+    currentGrid = [];
+    for (let i = 0; i < data.length; i += 4) {
+        const a = data[i+3];
+        // 关键逻辑：如果原图此像素透明(Alpha<50)，存为null，表示不填色
+        if (a < 50) {
+            currentGrid.push(null);
+        } else {
+            currentGrid.push(getNearest(data[i], data[i+1], data[i+2]));
+        }
+    }
+    draw();
+}
+
+function getNearest(r, g, b) {
+    let min = Infinity, best = COLORS[0];
+    for (const c of COLORS) {
+        const d = (r-c.rgb[0])**2 + (g-c.rgb[1])**2 + (b-c.rgb[2])**2;
+        if (d < min) { min = d; best = c; }
+    }
+    return best;
+}
+
+function draw() {
+    if (!currentGrid.length) return;
+    const stats = {};
+    currentGrid.forEach(c => { if(c) stats[c.code] = (stats[c.code] || 0) + 1; });
+    const used = Object.keys(stats).sort().map(k => ({ code: k, count: stats[k], rgb: COLORS.find(c=>c.code===k).rgb }));
+
+    const legCols = window.innerWidth < 600 ? 4 : 8;
+    canvas.width = config.cols * config.cellSize + config.padding * 2;
+    canvas.height = config.rows * config.cellSize + config.padding * 2 + Math.ceil(used.length/legCols)*45 + 100;
+
+    // 清屏渲染背景
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 1. 绘制网格内容
+    currentGrid.forEach((c, i) => {
+        const x = i % config.cols, y = Math.floor(i / config.cols);
+        const px = config.padding + x * config.cellSize, py = config.padding + y * config.cellSize;
+        
+        if (c) {
+            ctx.fillStyle = `rgb(${c.rgb.join(',')})`;
+            ctx.fillRect(px, py, config.cellSize, config.cellSize);
+            if(config.cellSize > 12) {
+                ctx.strokeStyle = "rgba(0,0,0,0.1)"; ctx.strokeRect(px, py, config.cellSize, config.cellSize);
+                const br = (c.rgb[0]*299 + c.rgb[1]*587 + c.rgb[2]*114)/1000;
+                ctx.fillStyle = br > 125 ? "#000" : "#fff";
+                ctx.font = `${config.cellSize/2.6}px Arial`; ctx.textAlign="center"; ctx.textBaseline="middle";
+                ctx.fillText(c.code, px+config.cellSize/2, py+config.cellSize/2);
+            }
+        } else {
+            // 透明区域：仅绘制极淡的参考点或参考线，确保序号能对上
+            ctx.strokeStyle = "rgba(0,0,0,0.03)";
+            ctx.strokeRect(px, py, config.cellSize, config.cellSize);
+        }
+    });
+
+    // 2. 绘制完整序号框架 (不受透明区域影响)
+    ctx.fillStyle = "#333"; ctx.font = "bold 14px Arial"; ctx.textAlign="center";
+    const step = Math.max(1, Math.floor(config.cols / (window.innerWidth/50)));
+    
+    // 横向序号 (顶底)
+    for(let i=0; i<config.cols; i+=step) {
+        const txt = i + 1;
+        ctx.fillText(txt, config.padding+(i+0.5)*config.cellSize, config.padding - 15);
+        ctx.fillText(txt, config.padding+(i+0.5)*config.cellSize, config.padding + config.rows*config.cellSize + 20);
+    }
+    // 纵向序号 (左右)
+    ctx.textAlign="right";
+    for(let i=0; i<config.rows; i+=step) {
+        const txt = i + 1;
+        ctx.fillText(txt, config.padding - 10, config.padding+(i+0.5)*config.cellSize+5);
+        ctx.fillText(txt, config.padding + config.cols*config.cellSize + 25, config.padding+(i+0.5)*config.cellSize+5);
+    }
+
+    // 3. 绘制统计清单
+    const startY = config.padding*2 + config.rows*config.cellSize;
+    ctx.textAlign="left"; ctx.font="bold 18px Arial"; 
+    ctx.fillText("Mard 豆子清单 (已自动忽略透明背景):", config.padding, startY);
+    used.forEach((it, i) => {
+        const r=Math.floor(i/legCols), cl=i%legCols;
+        const x=config.padding+cl*(canvas.width/(legCols+0.3)), y=startY+40+r*40;
+        ctx.fillStyle=`rgb(${it.rgb.join(',')})`; ctx.fillRect(x,y,22,22);
+        ctx.strokeStyle="#000"; ctx.strokeRect(x,y,22,22);
+        ctx.fillStyle="#333"; ctx.font="12px Arial"; ctx.fillText(`${it.code}(${it.count})`, x+26, y+16);
+    });
+}
+
+// --- 交互系统 (保持全平台支持) ---
+function getGridXY(e) {
+    const rect = canvas.getBoundingClientRect();
+    const cx = e.touches ? e.touches[0].clientX : e.clientX;
+    const cy = e.touches ? e.touches[0].clientY : e.clientY;
+    const x = (cx - rect.left) * (canvas.width / rect.width);
+    const y = (cy - rect.top) * (canvas.height / rect.height);
+    return { gx: Math.floor((x - config.padding) / config.cellSize), gy: Math.floor((y - config.padding) / config.cellSize) };
+}
+
+function handleStart(e) {
+    const {gx, gy} = getGridXY(e);
+    if (gx>=0 && gx<config.cols && gy>=0 && gy<config.rows) {
+        isActing = true; startPos = {gx, gy};
+        if (e.button === 2) { selectColor(currentGrid[gy*config.cols+gx]); return; }
+        if (e.touches) {
+            touchTimer = setTimeout(() => {
+                const color = currentGrid[gy*config.cols+gx];
+                if(color) { selectColor(color); alert("吸取色号: " + color.code); }
+                isActing = false;
+            }, 600);
+        }
+        if (config.mode === 'draw') { currentGrid[gy*config.cols+gx] = selectedColor; draw(); }
+    }
+}
+
+function handleMove(e) {
+    if (!isActing) return;
+    if (e.touches) { e.preventDefault(); clearTimeout(touchTimer); }
+    const {gx, gy} = getGridXY(e);
+    if (config.mode === 'draw' && gx>=0 && gx<config.cols && gy>=0 && gy<config.rows) {
+        currentGrid[gy*config.cols+gx] = selectedColor; draw();
+    }
+}
+
+function handleEnd(e) {
+    if (config.mode === 'smooth' && isActing) {
+        const {gx, gy} = getGridXY(e.changedTouches ? e.changedTouches[0] : e);
+        applySmooth(startPos.gx, startPos.gy, gx, gy);
+        draw();
+    }
+    isActing = false; clearTimeout(touchTimer);
+}
+
+canvas.addEventListener('mousedown', handleStart);
+window.addEventListener('mousemove', handleMove);
+window.addEventListener('mouseup', handleEnd);
+canvas.addEventListener('touchstart', handleStart, {passive: false});
+canvas.addEventListener('touchmove', handleMove, {passive: false});
+canvas.addEventListener('touchend', handleEnd);
+canvas.oncontextmenu = (e) => e.preventDefault();
+
+function setMode(m) {
+    config.mode = m;
+    document.getElementById('drawBtn').className = m==='draw'?'btn-tool active':'btn-tool';
+    document.getElementById('smoothBtn').className = m==='smooth'?'btn-tool active':'btn-tool';
+    document.getElementById('modeText').innerText = "模式: " + (m==='draw'?'画笔':'框选平滑');
+}
+
+function applySmooth(x1, y1, x2, y2) {
+    const minX = Math.max(0, Math.min(x1, x2)), maxX = Math.min(config.cols-1, Math.max(x1, x2));
+    const minY = Math.max(0, Math.min(y1, y2)), maxY = Math.min(config.rows-1, Math.max(y1, y2));
+    const freq = {};
+    for (let y=minY; y<=maxY; y++) for (let x=minX; x<=maxX; x++) {
+        const item = currentGrid[y*config.cols+x];
+        const key = item ? item.code : "EMPTY";
+        freq[key] = (freq[key]||0)+1;
+    }
+    const topKey = Object.keys(freq).reduce((a,b)=>freq[a]>freq[b]?a:b);
+    const clr = topKey === "EMPTY" ? null : COLORS.find(c=>c.code===topKey);
+    for (let y=minY; y<=maxY; y++) for (let x=minX; x<=maxX; x++) currentGrid[y*config.cols+x] = clr;
+}
+
+function exportImage() {
+    if (!currentGrid.length) return alert("请先生成图纸");
+    const dataURL = canvas.toDataURL('image/png');
+    if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+        const win = window.open();
+        win.document.write('<div style="text-align:center;padding:20px;background:#f0f2f5;"><h3>Mard 导出高清版</h3><p>请长按图片保存到相册</p><img src="' + dataURL + '" style="width:100%; box-shadow:0 0 10px rgba(0,0,0,0.2);"></div>');
+    } else {
+        const a = document.createElement('a');
+        a.href = dataURL; a.download = `Mard_Beads_Master.png`; a.click();
+    }
+}
+</script>
+</body>
+</html>
